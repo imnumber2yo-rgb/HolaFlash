@@ -1,0 +1,5 @@
+{
+  "name": "HolaFlash: Spanish Mastery",
+  "description": "A gamified Spanish flashcard app with AI-powered smart testing, text-to-speech, and character-driven learning.",
+  "requestFramePermissions": ["microphone"]
+}
