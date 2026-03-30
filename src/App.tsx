@@ -466,6 +466,8 @@ export default function App() {
     );
   }
 
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -475,8 +477,26 @@ export default function App() {
           </div>
           <h1 className="text-3xl font-black text-slate-800 mb-2">HolaFlash</h1>
           <p className="text-slate-500 mb-8">Master Spanish with AI-powered flashcards and gamified learning.</p>
+          
+          {loginError && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl text-sm text-red-600 font-medium">
+              {loginError}
+            </div>
+          )}
+
           <button
-            onClick={loginWithGoogle}
+            onClick={async () => {
+              try {
+                setLoginError(null);
+                await loginWithGoogle();
+              } catch (e: any) {
+                if (e.code === 'auth/unauthorized-domain') {
+                  setLoginError("This domain is not authorized for Google Sign-in. Please add it in the Firebase Console.");
+                } else {
+                  setLoginError(e.message || "Failed to sign in. Please try again.");
+                }
+              }
+            }}
             className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-white border-2 border-slate-200 rounded-2xl font-bold text-slate-700 hover:bg-slate-50 hover:border-orange-200 transition-all shadow-sm group"
           >
             <LogIn className="w-5 h-5 text-slate-400 group-hover:text-orange-500" />
