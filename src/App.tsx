@@ -8,18 +8,47 @@ import {
   ChevronRight,
   ChevronLeft,
   Trophy,
-  Settings2
+  Settings2,
+  Mic,
+  LogIn,
+  LogOut,
+  Loader2
 } from "lucide-react";
 import { Word, UserStats } from "./types";
 import { Flashcard } from "./components/Flashcard";
 import { Dictionary } from "./components/Dictionary";
 import { SmartTest } from "./components/SmartTest";
+import { PronunciationPractice } from "./components/PronunciationPractice";
 import { Gamification } from "./components/Gamification";
 import { CollectablesPage } from "./components/CollectablesPage";
 import { Settings } from "./components/Settings";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { cn } from "./lib/utils";
 import { suggestNewWord, generateExampleSentence, generateNewCollectable } from "./services/gemini";
 import { COLLECTABLES } from "./constants/mascots";
+import { 
+  auth, 
+  db, 
+  loginWithGoogle, 
+  logout, 
+  handleFirestoreError, 
+  OperationType 
+} from "./firebase";
+import { 
+  onAuthStateChanged, 
+  User 
+} from "firebase/auth";
+import { 
+  doc, 
+  collection, 
+  onSnapshot, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  orderBy,
+  writeBatch
+} from "firebase/firestore";
 
 const INITIAL_WORDS: Word[] = [
   { id: "1", spanish: "Hola", english: "Hello", category: "phrase", addedDate: Date.now(), nextReviewDate: Date.now(), interval: 0, easeFactor: 2.5, masteryScore: 0, testCount: 0 },
@@ -54,42 +83,12 @@ const INITIAL_STATS: UserStats = {
 };
 
 export default function App() {
-  const [words, setWords] = useState<Word[]>(() => {
-    const saved = localStorage.getItem("holaflash_words");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Migration for old data without SRS fields
-      return parsed.map((w: any) => ({
-        ...w,
-        nextReviewDate: w.nextReviewDate || Date.now(),
-        interval: w.interval || 0,
-        easeFactor: w.easeFactor || 2.5,
-      }));
-    }
-    return INITIAL_WORDS;
-  });
-
-  const [stats, setStats] = useState<UserStats>(() => {
-    const saved = localStorage.getItem("holaflash_stats");
-    const initial = saved ? JSON.parse(saved) : INITIAL_STATS;
-    // Migration for new fields
-    return {
-      ...INITIAL_STATS,
-      ...initial,
-      dailyXPGoal: initial.dailyXPGoal || 50,
-      dailyXPProgress: initial.dailyXPProgress || 0,
-      lastGoalResetDate: initial.lastGoalResetDate || Date.now(),
-      unlockedCollectables: initial.unlockedCollectables || [],
-      categoryMastery: initial.categoryMastery || INITIAL_STATS.categoryMastery,
-      aiGeneratedCollectables: initial.aiGeneratedCollectables || [],
-      srsSettings: initial.srsSettings || INITIAL_STATS.srsSettings,
-    };
-  });
-
-  const [archivedWords, setArchivedWords] = useState<string[]>(() => {
-    const saved = localStorage.getItem("holaflash_archived");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [words, setWords] = useState<Word[]>([]);
+  const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
+  const [archivedWords, setArchivedWords] = useState<string[]>([]);
+  const [isDataLoading, setIsDataLoading] = useState(false);
 
   const [view, setView] = useState<"learn" | "test" | "dictionary" | "collectables" | "practice" | "settings">("learn");
   const [aiAnalysis, setAiAnalysis] = useState<{ summary: string; recommendations: string[] } | null>(null);
@@ -100,8 +99,66 @@ export default function App() {
   const [sessionCompletedIds, setSessionCompletedIds] = useState<string[]>([]);
   const [lastUnlockedId, setLastUnlockedId] = useState<string | null>(null);
 
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore Listeners
+  useEffect(() => {
+    if (!user) {
+      setWords([]);
+      setStats(INITIAL_STATS);
+      return;
+    }
+
+    setIsDataLoading(true);
+
+    // Stats Listener
+    const statsRef = doc(db, "users", user.uid);
+    const unsubscribeStats = onSnapshot(statsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as UserStats;
+        setStats({
+          ...INITIAL_STATS,
+          ...data,
+          dailyXPGoal: data.dailyXPGoal || 50,
+          dailyXPProgress: data.dailyXPProgress || 0,
+          lastGoalResetDate: data.lastGoalResetDate || Date.now(),
+          unlockedCollectables: data.unlockedCollectables || [],
+          categoryMastery: data.categoryMastery || INITIAL_STATS.categoryMastery,
+          aiGeneratedCollectables: data.aiGeneratedCollectables || [],
+          srsSettings: data.srsSettings || INITIAL_STATS.srsSettings,
+        });
+      } else {
+        // Initialize stats if new user
+        setDoc(statsRef, INITIAL_STATS).catch(e => handleFirestoreError(e, OperationType.CREATE, `users/${user.uid}`));
+      }
+      setIsDataLoading(false);
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}`));
+
+    // Words Listener
+    const wordsRef = collection(db, "users", user.uid, "words");
+    const q = query(wordsRef, orderBy("addedDate", "desc"));
+    const unsubscribeWords = onSnapshot(q, (snapshot) => {
+      const wordsList = snapshot.docs.map(doc => doc.data() as Word);
+      setWords(wordsList);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/words`));
+
+    return () => {
+      unsubscribeStats();
+      unsubscribeWords();
+    };
+  }, [user]);
+
   // Collectables Unlocking Logic
   useEffect(() => {
+    if (!user || isDataLoading) return;
+    
     const masteredCount = words.filter(w => w.masteryScore >= 95).length + archivedWords.length;
     
     // Update category mastery counts
@@ -132,31 +189,31 @@ export default function App() {
       .map(c => c.id);
 
     if (newlyUnlocked.length > 0) {
-      setStats(prev => ({
-        ...prev,
-        unlockedCollectables: [...new Set([...prev.unlockedCollectables, ...newlyUnlocked])],
+      updateDoc(doc(db, "users", user.uid), {
+        unlockedCollectables: [...new Set([...stats.unlockedCollectables, ...newlyUnlocked])],
         categoryMastery: categoryCounts as any
-      }));
+      }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
       setLastUnlockedId(newlyUnlocked[newlyUnlocked.length - 1]);
     }
-  }, [words, archivedWords, stats.unlockedCollectables, stats.streak, stats.xp, stats.aiGeneratedCollectables]);
+  }, [words, archivedWords, stats.unlockedCollectables, stats.streak, stats.xp, stats.aiGeneratedCollectables, user, isDataLoading]);
 
   // AI Collectable Generation Logic
   useEffect(() => {
+    if (!user || isDataLoading) return;
+
     const checkForNewAICollectable = async () => {
       const today = new Date().toISOString().slice(0, 10);
-      const lastCheck = localStorage.getItem("holaflash_last_ai_check");
+      const lastCheck = localStorage.getItem(`holaflash_last_ai_check_${user.uid}`);
       
       if (lastCheck !== today || (stats.xp > 0 && stats.xp % 1000 === 0)) {
         try {
           const newCollectable = await generateNewCollectable(stats, today);
           
           if (!stats.aiGeneratedCollectables.find(c => c.id === newCollectable.id)) {
-            setStats(prev => ({
-              ...prev,
-              aiGeneratedCollectables: [...prev.aiGeneratedCollectables, newCollectable]
-            }));
-            localStorage.setItem("holaflash_last_ai_check", today);
+            await updateDoc(doc(db, "users", user.uid), {
+              aiGeneratedCollectables: [...stats.aiGeneratedCollectables, newCollectable]
+            });
+            localStorage.setItem(`holaflash_last_ai_check_${user.uid}`, today);
           }
         } catch (error) {
           console.error("Failed to generate AI collectable:", error);
@@ -167,21 +224,22 @@ export default function App() {
     if (stats.xp > 0) {
       checkForNewAICollectable();
     }
-  }, [stats.xp]);
+  }, [stats.xp, user, isDataLoading]);
 
   // Daily Reset Logic
   useEffect(() => {
+    if (!user || isDataLoading) return;
+
     const now = new Date();
     const lastReset = new Date(stats.lastGoalResetDate || 0);
     
     if (now.toDateString() !== lastReset.toDateString()) {
-      setStats(prev => ({
-        ...prev,
+      updateDoc(doc(db, "users", user.uid), {
         dailyXPProgress: 0,
         lastGoalResetDate: Date.now(),
-      }));
+      }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
     }
-  }, [stats.lastGoalResetDate]);
+  }, [stats.lastGoalResetDate, user, isDataLoading]);
 
   // Reset session when view changes or session length changes
   useEffect(() => {
@@ -189,82 +247,76 @@ export default function App() {
     setCurrentIndex(0);
   }, [view, sessionLength]);
 
-  // Persistence
-  useEffect(() => {
-    localStorage.setItem("holaflash_words", JSON.stringify(words));
-  }, [words]);
-
-  useEffect(() => {
-    localStorage.setItem("holaflash_stats", JSON.stringify(stats));
-  }, [stats]);
-
-  useEffect(() => {
-    localStorage.setItem("holaflash_archived", JSON.stringify(archivedWords));
-  }, [archivedWords]);
-
   // Mastery Logic: Remove words mastered after 30 days
   useEffect(() => {
+    if (!user || isDataLoading || words.length === 0) return;
+
     const now = Date.now();
     const thirtyDaysInMs = 30 * 24 * 60 * 60 * 1000;
     
-    const activeWords = words.filter(word => {
+    const masteredWords = words.filter(word => {
       const isOldEnough = (now - word.addedDate) >= thirtyDaysInMs;
       const isMastered = word.masteryScore >= 95;
-      return !(isOldEnough && isMastered);
+      return isOldEnough && isMastered;
     });
 
-    if (activeWords.length !== words.length) {
-      const masteredWords = words.filter(word => {
-        const isOldEnough = (now - word.addedDate) >= thirtyDaysInMs;
-        const isMastered = word.masteryScore >= 95;
-        return isOldEnough && isMastered;
+    if (masteredWords.length > 0) {
+      const batch = writeBatch(db);
+      masteredWords.forEach(w => {
+        batch.delete(doc(db, "users", user.uid, "words", w.id));
       });
       
-      setWords(activeWords);
-      setArchivedWords(prev => [...new Set([...prev, ...masteredWords.map(w => w.spanish)])]);
-      
-      const masteredCount = words.length - activeWords.length;
-      addXP(masteredCount * 50);
+      batch.commit().then(() => {
+        setArchivedWords(prev => [...new Set([...prev, ...masteredWords.map(w => w.spanish)])]);
+        addXP(masteredWords.length * 50);
+      }).catch(e => handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/words`));
     }
-  }, []);
+  }, [words, user, isDataLoading]);
 
   // Sentence Generation for existing words
   useEffect(() => {
+    if (!user || isDataLoading) return;
+
     const wordsWithoutSentences = words.filter(w => !w.exampleSentence);
     if (wordsWithoutSentences.length > 0) {
       const generateNext = async () => {
         const word = wordsWithoutSentences[0];
         try {
           const { exampleSentence, sentenceTranslation } = await generateExampleSentence(word.spanish, word.english);
-          setWords(prev => prev.map(w => w.id === word.id ? { ...w, exampleSentence, sentenceTranslation } : w));
+          await updateDoc(doc(db, "users", user.uid, "words", word.id), {
+            exampleSentence,
+            sentenceTranslation
+          });
         } catch (e) {
           console.error("Failed to generate sentence for", word.spanish);
         }
       };
       generateNext();
     }
-  }, [words]);
+  }, [words, user, isDataLoading]);
 
   const addXP = (amount: number) => {
-    setStats(prev => {
-      const newXP = prev.xp + amount;
-      const newLevel = Math.floor(newXP / 100) + 1;
-      return { 
-        ...prev, 
-        xp: newXP, 
-        level: newLevel,
-        dailyXPProgress: prev.dailyXPProgress + amount
-      };
-    });
+    if (!user) return;
+    const newXP = stats.xp + amount;
+    const newLevel = Math.floor(newXP / 100) + 1;
+    updateDoc(doc(db, "users", user.uid), {
+      xp: newXP,
+      level: newLevel,
+      dailyXPProgress: stats.dailyXPProgress + amount
+    }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
   };
 
   const handleUpdateGoal = (goal: number) => {
-    setStats(prev => ({ ...prev, dailyXPGoal: goal }));
+    if (!user) return;
+    updateDoc(doc(db, "users", user.uid), { dailyXPGoal: goal })
+      .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
   };
 
   const handleAddWord = async (spanish: string, english: string, category: any = "other") => {
+    if (!user) return;
+    const wordId = Math.random().toString(36).substr(2, 9);
     const newWord: Word = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: wordId,
       spanish,
       english,
       category,
@@ -275,26 +327,34 @@ export default function App() {
       masteryScore: 0,
       testCount: 0,
     };
-    setWords(prev => [...prev, newWord]);
+    
+    await setDoc(doc(db, "users", user.uid, "words", wordId), newWord)
+      .catch(e => handleFirestoreError(e, OperationType.CREATE, `users/${user.uid}/words/${wordId}`));
+    
     addXP(10);
 
     // Generate sentence asynchronously
     try {
       const { exampleSentence, sentenceTranslation } = await generateExampleSentence(spanish, english);
-      setWords(prev => prev.map(w => w.id === newWord.id ? { ...w, exampleSentence, sentenceTranslation } : w));
+      await updateDoc(doc(db, "users", user.uid, "words", wordId), {
+        exampleSentence,
+        sentenceTranslation
+      });
     } catch (e) {
       console.error("Failed to generate sentence for", spanish);
     }
   };
 
   const handleAISuggest = async () => {
+    if (!user) return;
     setIsSuggesting(true);
     try {
       const existing = words.map(w => w.spanish);
       const suggestion = await suggestNewWord(existing, archivedWords, stats.level);
       if (suggestion) {
+        const wordId = Math.random().toString(36).substr(2, 9);
         const newWord: Word = {
-          id: Math.random().toString(36).substr(2, 9),
+          id: wordId,
           spanish: suggestion.spanish,
           english: suggestion.english,
           category: suggestion.category,
@@ -307,7 +367,7 @@ export default function App() {
           masteryScore: 0,
           testCount: 0,
         };
-        setWords(prev => [...prev, newWord]);
+        await setDoc(doc(db, "users", user.uid, "words", wordId), newWord);
         addXP(10);
       }
     } catch (error) {
@@ -318,51 +378,52 @@ export default function App() {
   };
 
   const handleDeleteWord = (id: string) => {
+    if (!user) return;
     const wordToDelete = words.find(w => w.id === id);
     if (wordToDelete) {
       setArchivedWords(prev => [...new Set([...prev, wordToDelete.spanish])]);
     }
-    setWords(words.filter(w => w.id !== id));
+    deleteDoc(doc(db, "users", user.uid, "words", id))
+      .catch(e => handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/words/${id}`));
   };
 
   const handleTestResult = (wordId: string, score: number) => {
-    setWords(prev => prev.map(w => {
-      if (w.id === wordId) {
-        // SRS Logic (Simplified SM-2)
-        let newInterval = w.interval;
-        let newEaseFactor = w.easeFactor;
-        
-        if (score >= 80) { // Correct
-          if (w.testCount === 0) newInterval = stats.srsSettings.startingInterval;
-          else if (w.testCount === 1) newInterval = 6;
-          else newInterval = Math.round(w.interval * w.easeFactor * stats.srsSettings.intervalMultiplier);
-          
-          // Adjust ease factor based on performance (q = score/20)
-          const q = score / 20;
-          newEaseFactor = Math.max(1.3, w.easeFactor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+    if (!user) return;
+    const word = words.find(w => w.id === wordId);
+    if (!word) return;
 
-          // Mark as completed for this session
-          setSessionCompletedIds(prev => [...new Set([...prev, wordId])]);
-        } else { // Incorrect
-          newInterval = stats.srsSettings.startingInterval;
-          newEaseFactor = Math.max(1.3, w.easeFactor - 0.2);
-        }
+    // SRS Logic (Simplified SM-2)
+    let newInterval = word.interval;
+    let newEaseFactor = word.easeFactor;
+    
+    if (score >= 80) { // Correct
+      if (word.testCount === 0) newInterval = stats.srsSettings.startingInterval;
+      else if (word.testCount === 1) newInterval = 6;
+      else newInterval = Math.round(word.interval * word.easeFactor * stats.srsSettings.intervalMultiplier);
+      
+      // Adjust ease factor based on performance (q = score/20)
+      const q = score / 20;
+      newEaseFactor = Math.max(1.3, word.easeFactor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
 
-        const nextReview = Date.now() + newInterval * 24 * 60 * 60 * 1000;
-        const newMastery = Math.min(100, Math.max(0, (w.masteryScore * 0.7) + (score * 0.3)));
+      // Mark as completed for this session
+      setSessionCompletedIds(prev => [...new Set([...prev, wordId])]);
+    } else { // Incorrect
+      newInterval = stats.srsSettings.startingInterval;
+      newEaseFactor = Math.max(1.3, word.easeFactor - 0.2);
+    }
 
-        return { 
-          ...w, 
-          masteryScore: Math.round(newMastery), 
-          testCount: w.testCount + 1,
-          lastTestedDate: Date.now(),
-          nextReviewDate: nextReview,
-          interval: newInterval,
-          easeFactor: newEaseFactor
-        };
-      }
-      return w;
-    }));
+    const nextReview = Date.now() + newInterval * 24 * 60 * 60 * 1000;
+    const newMastery = Math.min(100, Math.max(0, (word.masteryScore * 0.7) + (score * 0.3)));
+
+    updateDoc(doc(db, "users", user.uid, "words", wordId), { 
+      masteryScore: Math.round(newMastery), 
+      testCount: word.testCount + 1,
+      lastTestedDate: Date.now(),
+      nextReviewDate: nextReview,
+      interval: newInterval,
+      easeFactor: newEaseFactor
+    }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/words/${wordId}`));
+    
     addXP(Math.round(score / 2));
   };
 
@@ -375,7 +436,9 @@ export default function App() {
   }, [words, sessionLength, sessionCompletedIds]);
 
   const handleMascotChange = (mascotId: string) => {
-    setStats(prev => ({ ...prev, selectedMascotId: mascotId }));
+    if (!user) return;
+    updateDoc(doc(db, "users", user.uid), { selectedMascotId: mascotId })
+      .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
   };
 
   const currentWord = useMemo(() => {
@@ -395,68 +458,111 @@ export default function App() {
     return Math.min(100, Math.round(levelFactor + masteryFactor));
   }, [stats.level, overallMastery]);
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-orange-100 selection:text-orange-900">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-500/20">
-              <Sparkles className="w-6 h-6" />
-            </div>
-            <h1 className="text-xl font-black tracking-tight text-slate-800">HolaFlash</h1>
-          </div>
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="w-12 h-12 text-orange-500 animate-spin" />
+      </div>
+    );
+  }
 
-          <nav className="hidden md:flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
-            {[
-              { id: "learn", icon: GraduationCap, label: "Learn" },
-              { id: "test", icon: BrainCircuit, label: "Smart Test" },
-              { id: "dictionary", icon: BookOpen, label: "Dictionary" },
-              { id: "collectables", icon: Trophy, label: "Hall of Fame" },
-              { id: "settings", icon: Settings2, label: "Settings" },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => {
-                  setView(item.id as any);
-                  setCurrentIndex(0);
-                }}
-                className={cn(
-                  "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all",
-                  view === item.id 
-                    ? "bg-white text-orange-500 shadow-sm" 
-                    : "text-slate-500 hover:text-slate-800"
-                )}
-              >
-                <item.icon className="w-4 h-4" />
-                {item.label}
-              </button>
-            ))}
-          </nav>
-
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
-              <Settings2 className="w-4 h-4 text-slate-400" />
-              <select 
-                value={sessionLength}
-                onChange={(e) => setSessionLength(Number(e.target.value) as any)}
-                className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none cursor-pointer"
-              >
-                <option value={5}>5 Items</option>
-                <option value={10}>10 Items</option>
-                <option value={15}>15 Items</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-50 text-orange-600 rounded-full border border-orange-100">
-              <Trophy className="w-4 h-4" />
-              <span className="text-sm font-black">Lvl {stats.level}</span>
-            </div>
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-3xl shadow-xl p-8 text-center border border-slate-100">
+          <div className="w-20 h-20 bg-orange-500 rounded-2xl flex items-center justify-center text-white shadow-lg mx-auto mb-6">
+            <Sparkles className="w-12 h-12" />
           </div>
+          <h1 className="text-3xl font-black text-slate-800 mb-2">HolaFlash</h1>
+          <p className="text-slate-500 mb-8">Master Spanish with AI-powered flashcards and gamified learning.</p>
+          <button
+            onClick={loginWithGoogle}
+            className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-white border-2 border-slate-200 rounded-2xl font-bold text-slate-700 hover:bg-slate-50 hover:border-orange-200 transition-all shadow-sm group"
+          >
+            <LogIn className="w-5 h-5 text-slate-400 group-hover:text-orange-500" />
+            Sign in with Google
+          </button>
         </div>
-      </header>
+      </div>
+    );
+  }
 
-      <main className="max-w-7xl mx-auto px-4 py-8 md:py-12">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+  return (
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-orange-100 selection:text-orange-900">
+        {/* Header */}
+        <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-500/20">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <h1 className="text-xl font-black tracking-tight text-slate-800">HolaFlash</h1>
+            </div>
+
+            <nav className="hidden md:flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+              {[
+                { id: "learn", icon: GraduationCap, label: "Learn" },
+                { id: "test", icon: BrainCircuit, label: "Smart Test" },
+                { id: "dictionary", icon: BookOpen, label: "Dictionary" },
+                { id: "practice", icon: Mic, label: "Practice" },
+                { id: "collectables", icon: Trophy, label: "Hall of Fame" },
+                { id: "settings", icon: Settings2, label: "Settings" },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setView(item.id as any);
+                    setCurrentIndex(0);
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all",
+                    view === item.id 
+                      ? "bg-white text-orange-500 shadow-sm" 
+                      : "text-slate-500 hover:text-slate-800"
+                  )}
+                >
+                  <item.icon className="w-4 h-4" />
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
+                <Settings2 className="w-4 h-4 text-slate-400" />
+                <select 
+                  value={sessionLength}
+                  onChange={(e) => setSessionLength(Number(e.target.value) as any)}
+                  className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none cursor-pointer"
+                >
+                  <option value={5}>5 Items</option>
+                  <option value={10}>10 Items</option>
+                  <option value={15}>15 Items</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-50 text-orange-600 rounded-full border border-orange-100">
+                <Trophy className="w-4 h-4" />
+                <span className="text-sm font-black">Lvl {stats.level}</span>
+              </div>
+              <button
+                onClick={logout}
+                className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-7xl mx-auto px-4 py-8 md:py-12">
+          {isDataLoading && (
+            <div className="fixed inset-0 bg-white/50 backdrop-blur-sm z-40 flex items-center justify-center">
+              <Loader2 className="w-10 h-10 text-orange-500 animate-spin" />
+            </div>
+          )}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           {/* Left Sidebar: Gamification */}
           <aside className="lg:col-span-3 order-2 lg:order-1">
             <Gamification 
@@ -578,6 +684,19 @@ export default function App() {
                   />
                 </motion.div>
               )}
+              {view === "practice" && (
+                <motion.div
+                  key="practice"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                >
+                  <PronunciationPractice 
+                    words={words} 
+                    onComplete={(score) => addXP(Math.round(score / 2))} 
+                  />
+                </motion.div>
+              )}
               {view === "settings" && (
                 <motion.div
                   key="settings"
@@ -602,6 +721,7 @@ export default function App() {
           { id: "learn", icon: GraduationCap },
           { id: "test", icon: BrainCircuit },
           { id: "dictionary", icon: BookOpen },
+          { id: "practice", icon: Mic },
           { id: "settings", icon: Settings2 },
         ].map((item) => (
           <button
@@ -616,6 +736,7 @@ export default function App() {
           </button>
         ))}
       </nav>
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }

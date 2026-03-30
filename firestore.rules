@@ -1,0 +1,143 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{userId}
+    // Document ID: {userId}
+    // Fields:
+    //   - xp: integer (required, >= 0)
+    //   - level: integer (required, >= 1)
+    //   - streak: integer (required, >= 0)
+    //   - selectedMascotId: string (required)
+    //   - dailyXPGoal: integer (required, > 0)
+    //   - dailyXPProgress: integer (required, >= 0)
+    //   - lastGoalResetDate: integer (required)
+    //   - unlockedCollectables: list (required, strings)
+    //   - categoryMastery: map (required, keys: noun, verb, adjective, phrase, other)
+    //   - aiGeneratedCollectables: list (required, objects)
+    //   - srsSettings: map (required, keys: initialEaseFactor, intervalMultiplier, startingInterval)
+    //
+    // Collection: /users/{userId}/words/{wordId}
+    // Document ID: {wordId}
+    // Fields:
+    //   - id: string (required)
+    //   - spanish: string (required, size < 200)
+    //   - english: string (required, size < 200)
+    //   - category: string (required, enum: noun, verb, adjective, phrase, other)
+    //   - addedDate: integer (required)
+    //   - nextReviewDate: integer (required)
+    //   - interval: integer (required)
+    //   - easeFactor: number (required)
+    //   - masteryScore: integer (required)
+    //   - testCount: integer (required)
+    //   - lastTestedDate: integer (optional)
+    //   - exampleSentence: string (optional, size < 1000)
+    //   - sentenceTranslation: string (optional, size < 1000)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "imnumber2yo@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(data, fields) {
+      return data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(data, fields) {
+      return data.keys().hasOnly(fields);
+    }
+
+    function isValidString(val, min, max) {
+      return val is string && val.size() >= min && val.size() <= max;
+    }
+
+    function isValidInt(val, min) {
+      return val is int && val >= min;
+    }
+
+    function isValidNumber(val, min) {
+      return (val is int || val is float) && val >= min;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUserStats(data) {
+      let requiredFields = ['xp', 'level', 'streak', 'selectedMascotId', 'dailyXPGoal', 'dailyXPProgress', 'lastGoalResetDate', 'unlockedCollectables', 'categoryMastery', 'aiGeneratedCollectables', 'srsSettings'];
+      return hasRequiredFields(data, requiredFields) &&
+             isValidInt(data.xp, 0) &&
+             isValidInt(data.level, 1) &&
+             isValidInt(data.streak, 0) &&
+             data.selectedMascotId is string &&
+             isValidInt(data.dailyXPGoal, 1) &&
+             isValidInt(data.dailyXPProgress, 0) &&
+             data.lastGoalResetDate is int &&
+             data.unlockedCollectables is list &&
+             data.categoryMastery is map &&
+             data.aiGeneratedCollectables is list &&
+             data.srsSettings is map &&
+             // Prevent self-role-escalation
+             (!('role' in data) || data.role == 'user' || isAdmin());
+    }
+
+    function isValidWord(data) {
+      let requiredFields = ['id', 'spanish', 'english', 'category', 'addedDate', 'nextReviewDate', 'interval', 'easeFactor', 'masteryScore', 'testCount'];
+      let allowedCategories = ['noun', 'verb', 'adjective', 'phrase', 'other'];
+      return hasRequiredFields(data, requiredFields) &&
+             isValidString(data.spanish, 1, 200) &&
+             isValidString(data.english, 1, 200) &&
+             data.category in allowedCategories &&
+             data.addedDate is int &&
+             data.nextReviewDate is int &&
+             isValidInt(data.interval, 0) &&
+             isValidNumber(data.easeFactor, 1.0) &&
+             isValidInt(data.masteryScore, 0) &&
+             isValidInt(data.testCount, 0) &&
+             (!('exampleSentence' in data) || isValidString(data.exampleSentence, 0, 1000)) &&
+             (!('sentenceTranslation' in data) || isValidString(data.sentenceTranslation, 0, 1000));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUserStats(request.resource.data);
+      allow update: if (isOwner(userId) && isValidUserStats(request.resource.data) && 
+                       (request.resource.data.role == resource.data.role || isAdmin())) || isAdmin();
+      allow delete: if isAdmin();
+
+      match /words/{wordId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidWord(request.resource.data);
+        allow update: if isOwner(userId) && isValidWord(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

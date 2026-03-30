@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "UserStats": {
+      "title": "User Stats",
+      "description": "Gamification and progress statistics for a user.",
+      "type": "object",
+      "properties": {
+        "xp": { "type": "integer", "description": "Total experience points." },
+        "level": { "type": "integer", "description": "Current level." },
+        "streak": { "type": "integer", "description": "Current daily streak." },
+        "selectedMascotId": { "type": "string", "description": "ID of the selected mascot." },
+        "dailyXPGoal": { "type": "integer", "description": "Daily XP goal." },
+        "dailyXPProgress": { "type": "integer", "description": "XP earned today." },
+        "lastGoalResetDate": { "type": "integer", "description": "Timestamp of the last goal reset." },
+        "unlockedCollectables": { 
+          "type": "array", 
+          "items": { "type": "string" },
+          "description": "List of IDs of unlocked collectables."
+        },
+        "categoryMastery": {
+          "type": "object",
+          "properties": {
+            "noun": { "type": "integer" },
+            "verb": { "type": "integer" },
+            "adjective": { "type": "integer" },
+            "phrase": { "type": "integer" },
+            "other": { "type": "integer" }
+          },
+          "description": "Number of mastered words per category."
+        },
+        "aiGeneratedCollectables": {
+          "type": "array",
+          "items": { "$ref": "Collectable" },
+          "description": "List of AI-generated collectables."
+        },
+        "srsSettings": {
+          "type": "object",
+          "properties": {
+            "initialEaseFactor": { "type": "number" },
+            "intervalMultiplier": { "type": "number" },
+            "startingInterval": { "type": "integer" }
+          },
+          "description": "Spaced Repetition System settings."
+        }
+      },
+      "required": ["xp", "level", "streak", "selectedMascotId", "dailyXPGoal", "dailyXPProgress", "lastGoalResetDate", "unlockedCollectables", "categoryMastery", "aiGeneratedCollectables", "srsSettings"]
+    },
+    "Word": {
+      "title": "Word",
+      "description": "A vocabulary word or phrase being learned.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "spanish": { "type": "string" },
+        "english": { "type": "string" },
+        "category": { "type": "string", "enum": ["noun", "verb", "adjective", "phrase", "other"] },
+        "addedDate": { "type": "integer" },
+        "nextReviewDate": { "type": "integer" },
+        "interval": { "type": "integer" },
+        "easeFactor": { "type": "number" },
+        "masteryScore": { "type": "integer" },
+        "testCount": { "type": "integer" },
+        "lastTestedDate": { "type": "integer" },
+        "exampleSentence": { "type": "string" },
+        "sentenceTranslation": { "type": "string" }
+      },
+      "required": ["id", "spanish", "english", "category", "addedDate", "nextReviewDate", "interval", "easeFactor", "masteryScore", "testCount"]
+    },
+    "Collectable": {
+      "title": "Collectable",
+      "description": "An achievement or item unlocked by the user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "emoji": { "type": "string" },
+        "description": { "type": "string" },
+        "requirementType": { "type": "string", "enum": ["total_mastery", "category_mastery", "streak", "ai_milestone", "event"] },
+        "requirementValue": { "type": "integer" },
+        "category": { "type": "string", "enum": ["noun", "verb", "adjective", "phrase", "other"] },
+        "eventDate": { "type": "string" },
+        "isAIGenerated": { "type": "boolean" }
+      },
+      "required": ["id", "name", "emoji", "description", "requirementType", "requirementValue"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserStats",
+      "description": "User profile and stats."
+    },
+    "/users/{userId}/words/{wordId}": {
+      "schema": "Word",
+      "description": "Vocabulary words for a user."
+    }
+  }
+}
