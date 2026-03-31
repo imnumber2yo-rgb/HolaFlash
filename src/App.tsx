@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import { 
   GraduationCap, 
   BookOpen, 
@@ -494,6 +494,8 @@ export default function App() {
     return Math.min(100, Math.round(levelFactor + masteryFactor));
   }, [stats.level, overallMastery]);
 
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -501,8 +503,6 @@ export default function App() {
       </div>
     );
   }
-
-  const [loginError, setLoginError] = useState<string | null>(null);
 
   if (!user) {
     return (
@@ -515,8 +515,20 @@ export default function App() {
           <p className="text-slate-500 mb-8">Master Spanish with AI-powered flashcards and gamified learning.</p>
           
           {loginError && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl text-sm text-red-600 font-medium">
-              {loginError}
+            <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl text-sm text-red-600 font-medium text-left">
+              <p className="font-bold mb-1">Login Error:</p>
+              <p className="opacity-90">{loginError}</p>
+              {loginError.includes("unauthorized-domain") && (
+                <div className="mt-3 pt-3 border-t border-red-200 text-xs">
+                  <p className="font-bold mb-1">How to fix:</p>
+                  <ol className="list-decimal list-inside space-y-1">
+                    <li>Go to Firebase Console</li>
+                    <li>Authentication &gt; Settings</li>
+                    <li>Authorized domains</li>
+                    <li>Add "holaflash.netlify.app"</li>
+                  </ol>
+                </div>
+              )}
             </div>
           )}
 
@@ -527,7 +539,7 @@ export default function App() {
                 await loginWithGoogle();
               } catch (e: any) {
                 if (e.code === 'auth/unauthorized-domain') {
-                  setLoginError("This domain is not authorized for Google Sign-in. Please add it in the Firebase Console.");
+                  setLoginError("This domain (holaflash.netlify.app) is not authorized for Google Sign-in in your Firebase project.");
                 } else {
                   setLoginError(e.message || "Failed to sign in. Please try again.");
                 }

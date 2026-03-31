@@ -2,7 +2,7 @@ import React, { useState, useRef } from "react";
 import { Plus, Trash2, Search, BookOpen, Sparkles, Loader2, Mic, MicOff } from "lucide-react";
 import { Word, WordCategory, UserStats } from "../types";
 import { translateWord } from "../services/gemini";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface DictionaryProps {
   words: Word[];
@@ -189,13 +189,13 @@ export const Dictionary: React.FC<DictionaryProps> = ({
                       <div>
                         <div className="flex justify-between items-center mb-3">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Difficulty</label>
-                          <span className="text-xs font-black text-purple-500">{suggestionSettings.difficultyAdjustment}%</span>
+                          <span className="text-xs font-black text-purple-500">{(suggestionSettings?.difficultyAdjustment ?? 50)}%</span>
                         </div>
                         <input
                           type="range"
                           min="0"
                           max="100"
-                          value={suggestionSettings.difficultyAdjustment}
+                          value={suggestionSettings?.difficultyAdjustment ?? 50}
                           onChange={(e) => onUpdateSettings({ difficultyAdjustment: parseInt(e.target.value) })}
                           className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-purple-500"
                         />
@@ -214,7 +214,7 @@ export const Dictionary: React.FC<DictionaryProps> = ({
                               type="button"
                               onClick={() => onUpdateSettings({ preferredCategory: cat as any })}
                               className={`px-2 py-1.5 rounded-lg text-[9px] font-bold capitalize transition-all border ${
-                                suggestionSettings.preferredCategory === cat
+                                (suggestionSettings?.preferredCategory ?? "all") === cat
                                   ? "bg-purple-500 border-purple-500 text-white shadow-md shadow-purple-100"
                                   : "bg-white border-slate-100 text-slate-500 hover:border-purple-200"
                               }`}
