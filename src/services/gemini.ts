@@ -65,17 +65,39 @@ export async function evaluateAnswer(
   }
 }
 
-export async function suggestNewWord(existingWords: string[], blacklist: string[], difficulty: number = 1): Promise<{ spanish: string; english: string; category: WordCategory; exampleSentence: string; sentenceTranslation: string }> {
+export async function suggestNewWord(
+  existingWords: string[], 
+  blacklist: string[], 
+  difficulty: number = 1, 
+  masteryScore: number = 0,
+  preferredCategory: WordCategory | "all" = "all",
+  difficultyAdjustment: number = 50 // 0 to 100
+): Promise<{ spanish: string; english: string; category: WordCategory; exampleSentence: string; sentenceTranslation: string }> {
   try {
     const ai = getAI();
     const allExcluded = [...new Set([...existingWords, ...blacklist])];
+    
+    // Add a random theme to increase variety
+    const themes = ["nature", "technology", "emotions", "travel", "food", "work", "hobbies", "urban life", "science", "art", "history", "daily routine", "family", "weather", "shopping"];
+    const randomTheme = themes[Math.floor(Math.random() * themes.length)];
+    
+    // Calculate effective difficulty based on level (1-15+), overall mastery (0-100), and user slider (0-100)
+    // Base difficulty from level: 1 to 15+
+    // Mastery adjustment: if mastery is high, push harder
+    // Slider adjustment: user's explicit preference
+    const effectiveDifficulty = Math.round((difficulty * 5) + (masteryScore / 4) + (difficultyAdjustment / 2));
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Suggest a Spanish word or short phrase that is not in this list: ${allExcluded.join(", ")}.
-      User Level: ${difficulty}.
-      - If level is low (1-5), suggest very common, basic words (e.g., colors, numbers, basic verbs).
-      - If level is medium (6-15), suggest more descriptive adjectives, common objects, and useful conversational phrases.
-      - If level is high (> 15), suggest advanced vocabulary, idiomatic expressions, and complex verbs.
+      contents: `Suggest a Spanish word or short phrase that is not in this list: ${allExcluded.slice(-100).join(", ")}.
+      Effective Difficulty Score: ${effectiveDifficulty} (Scale: 1-100).
+      Target Category: ${preferredCategory === "all" ? "any (noun, verb, adjective, phrase)" : preferredCategory}.
+      Theme context: ${randomTheme}.
+      
+      - If difficulty is low (< 30), suggest very common, basic words (e.g., colors, numbers, basic verbs).
+      - If difficulty is medium (30-70), suggest more descriptive adjectives, common objects, and useful conversational phrases.
+      - If difficulty is high (> 70), suggest advanced vocabulary, idiomatic expressions, and complex verbs.
+      
       Return a JSON object with:
       - spanish: the Spanish word/phrase
       - english: the English translation
@@ -84,6 +106,7 @@ export async function suggestNewWord(existingWords: string[], blacklist: string[
       - sentenceTranslation: the English translation of the sentence (with the word included)`,
       config: {
         responseMimeType: "application/json",
+        temperature: 1.0,
       },
     });
 

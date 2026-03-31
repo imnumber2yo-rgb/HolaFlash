@@ -79,6 +79,11 @@ const INITIAL_STATS: UserStats = {
     initialEaseFactor: 2.5,
     intervalMultiplier: 1.0,
     startingInterval: 1
+  },
+  archivedWords: {},
+  suggestionSettings: {
+    difficultyAdjustment: 50,
+    preferredCategory: "all"
   }
 };
 
@@ -87,7 +92,6 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [words, setWords] = useState<Word[]>([]);
   const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
-  const [archivedWords, setArchivedWords] = useState<string[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(false);
 
   const [view, setView] = useState<"learn" | "test" | "dictionary" | "collectables" | "practice" | "settings">("learn");
@@ -133,6 +137,8 @@ export default function App() {
           categoryMastery: data.categoryMastery || INITIAL_STATS.categoryMastery,
           aiGeneratedCollectables: data.aiGeneratedCollectables || [],
           srsSettings: data.srsSettings || INITIAL_STATS.srsSettings,
+          archivedWords: data.archivedWords || {},
+          suggestionSettings: data.suggestionSettings || INITIAL_STATS.suggestionSettings,
         });
       } else {
         // Initialize stats if new user
@@ -159,7 +165,7 @@ export default function App() {
   useEffect(() => {
     if (!user || isDataLoading) return;
     
-    const masteredCount = words.filter(w => w.masteryScore >= 95).length + archivedWords.length;
+    const masteredCount = words.filter(w => w.masteryScore >= 95).length + Object.keys(stats.archivedWords).length;
     
     // Update category mastery counts
     const categoryCounts: Record<string, number> = { noun: 0, verb: 0, adjective: 0, phrase: 0, other: 0 };
@@ -195,7 +201,7 @@ export default function App() {
       }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
       setLastUnlockedId(newlyUnlocked[newlyUnlocked.length - 1]);
     }
-  }, [words, archivedWords, stats.unlockedCollectables, stats.streak, stats.xp, stats.aiGeneratedCollectables, user, isDataLoading]);
+  }, [words, stats.archivedWords, stats.unlockedCollectables, stats.streak, stats.xp, stats.aiGeneratedCollectables, user, isDataLoading]);
 
   // AI Collectable Generation Logic
   useEffect(() => {
@@ -267,7 +273,12 @@ export default function App() {
       });
       
       batch.commit().then(() => {
-        setArchivedWords(prev => [...new Set([...prev, ...masteredWords.map(w => w.spanish)])]);
+        const newArchived = { ...stats.archivedWords };
+        masteredWords.forEach(w => {
+          newArchived[w.spanish] = Date.now();
+        });
+        updateDoc(doc(db, "users", user.uid), { archivedWords: newArchived })
+          .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
         addXP(masteredWords.length * 50);
       }).catch(e => handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/words`));
     }
@@ -350,7 +361,23 @@ export default function App() {
     setIsSuggesting(true);
     try {
       const existing = words.map(w => w.spanish);
-      const suggestion = await suggestNewWord(existing, archivedWords, stats.level);
+      
+      // Filter archived words: only exclude if archived within the last 3 months
+      const threeMonthsInMs = 90 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const recentArchived = Object.entries(stats.archivedWords)
+        .filter(([_, timestamp]) => (now - timestamp) < threeMonthsInMs)
+        .map(([word, _]) => word);
+      
+      const suggestion = await suggestNewWord(
+        existing, 
+        recentArchived, 
+        stats.level, 
+        overallMastery,
+        stats.suggestionSettings.preferredCategory,
+        stats.suggestionSettings.difficultyAdjustment
+      );
+      
       if (suggestion) {
         const wordId = Math.random().toString(36).substr(2, 9);
         const newWord: Word = {
@@ -381,7 +408,9 @@ export default function App() {
     if (!user) return;
     const wordToDelete = words.find(w => w.id === id);
     if (wordToDelete) {
-      setArchivedWords(prev => [...new Set([...prev, wordToDelete.spanish])]);
+      const newArchived = { ...stats.archivedWords, [wordToDelete.spanish]: Date.now() };
+      updateDoc(doc(db, "users", user.uid), { archivedWords: newArchived })
+        .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
     }
     deleteDoc(doc(db, "users", user.uid, "words", id))
       .catch(e => handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/words/${id}`));
@@ -434,6 +463,13 @@ export default function App() {
     const pool = sorted.filter(w => !sessionCompletedIds.includes(w.id));
     return pool.slice(0, sessionLength);
   }, [words, sessionLength, sessionCompletedIds]);
+
+  const handleUpdateSuggestionSettings = (newSettings: Partial<UserStats["suggestionSettings"]>) => {
+    if (!user) return;
+    const updated = { ...stats.suggestionSettings, ...newSettings };
+    updateDoc(doc(db, "users", user.uid), { suggestionSettings: updated })
+      .catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`));
+  };
 
   const handleMascotChange = (mascotId: string) => {
     if (!user) return;
@@ -592,7 +628,7 @@ export default function App() {
               lastUnlockedId={lastUnlockedId}
               onClearUnlocked={() => setLastUnlockedId(null)}
               onViewCollectables={() => setView("collectables")}
-              masteredCount={words.filter(w => w.masteryScore >= 95).length + archivedWords.length}
+              masteredCount={words.filter(w => w.masteryScore >= 95).length + stats.archivedWords.length}
             />
           </aside>
 
@@ -608,7 +644,7 @@ export default function App() {
                 >
                   <CollectablesPage 
                     stats={stats} 
-                    masteredCount={words.filter(w => w.masteryScore >= 95).length + archivedWords.length} 
+                    masteredCount={words.filter(w => w.masteryScore >= 95).length + stats.archivedWords.length} 
                   />
                 </motion.div>
               )}
@@ -701,6 +737,8 @@ export default function App() {
                     onDelete={handleDeleteWord} 
                     onSuggest={handleAISuggest}
                     isSuggesting={isSuggesting}
+                    suggestionSettings={stats.suggestionSettings}
+                    onUpdateSettings={handleUpdateSuggestionSettings}
                   />
                 </motion.div>
               )}

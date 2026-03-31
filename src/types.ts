@@ -36,6 +36,11 @@ export interface UserStats {
   categoryMastery: Record<WordCategory, number>; // Count of mastered words per category
   aiGeneratedCollectables: Collectable[]; // Dynamically generated collectables
   srsSettings: SRSSettings;
+  archivedWords: Record<string, number>; // Spanish word -> timestamp of archival
+  suggestionSettings: {
+    difficultyAdjustment: number; // 0 to 100
+    preferredCategory: WordCategory | "all";
+  };
 }
 
 export interface Collectable {
